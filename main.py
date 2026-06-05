@@ -7,9 +7,14 @@ from typing import Annotated
 import typer
 from gql import Client, gql
 from gql.transport.requests import RequestsHTTPTransport
+from pydantic import BaseModel
 
 
 DEFAULT_REPOSITORY = "oss2026hnu/reposcore-py"
+
+class User(BaseModel):
+    name: str
+    score: int
 
 app = typer.Typer(help="reposcore-py CLI")
 
@@ -74,6 +79,8 @@ def main(
     ] = DEFAULT_REPOSITORY,
 ) -> None:
     """Fetch basic repository counts from GitHub GraphQL API."""
+    user = User(name="test", score=100)
+    print(user)
     try:
         data = fetch_repository_counts(repository)
     except Exception as error:
