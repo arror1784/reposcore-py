@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Annotated
+from typing import Annotated, Optional
 
 import typer
 from gql import Client, gql
@@ -73,23 +73,37 @@ def fetch_repository_counts(repository: str) -> dict[str, object]:
 
 @app.command()
 def main(
-    repository: Annotated[
+    repos: Annotated[
+        list[str],
+        typer.Argument(help="조회할 GitHub 저장소 경로입니다. 예: owner/repo1 owner/repo2"),
+    ],
+    format: Annotated[
         str,
-        typer.Argument(help="조회할 GitHub 저장소 경로입니다. 예: owner/repo"),
-    ] = DEFAULT_REPOSITORY,
+        typer.Option("--format", "-f", help="출력 파일 형식을 지정합니다. (csv | txt | html)"),
+    ] = "txt",
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="결과를 저장할 출력 디렉터리 경로입니다. 예: ./result"),
+    ] = None,
 ) -> None:
     """Fetch basic repository counts from GitHub GraphQL API."""
     user = User(name="test", score=100)
     print(user)
-    try:
-        data = fetch_repository_counts(repository)
-    except Exception as error:
-        print(f"오류: {error}", file=sys.stderr)
-        raise typer.Exit(1) from error
 
-    typer.echo(f"Repository: {data['nameWithOwner']}")
-    typer.echo(f"Issues: {data['issues']['totalCount']}")
-    typer.echo(f"Pull Requests: {data['pullRequests']['totalCount']}")
+    if len(repos) == 0:
+        typer.echo("오류: 저장소를 하나 이상 입력해주세요.", err=True)
+        raise typer.Exit(1)
+
+    for repo in repos:
+        try:
+            data = fetch_repository_counts(repo)
+        except Exception as error:
+            print(f"오류 ({repo}): {error}", file=sys.stderr)
+            raise typer.Exit(1) from error
+
+        typer.echo(f"Repository: {data['nameWithOwner']}")
+        typer.echo(f"Issues: {data['issues']['totalCount']}")
+        typer.echo(f"Pull Requests: {data['pullRequests']['totalCount']}")
 
 
 def cli() -> None:
