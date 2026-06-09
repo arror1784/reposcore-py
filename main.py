@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from gql import Client, gql
@@ -79,7 +79,7 @@ def main(
         typer.Option("--format", "-f", help="출력 파일 형식을 지정합니다. (csv | txt | html)"),
     ] = "txt",
     output: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--output", "-o", help="결과를 저장할 출력 디렉터리 경로입니다. 예: ./result"),
     ] = None,
 ) -> None:
