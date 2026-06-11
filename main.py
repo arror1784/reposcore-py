@@ -17,6 +17,7 @@ DEFAULT_REPOSITORY = "oss2026hnu/reposcore-py"
 app = typer.Typer(help="reposcore-py CLI")
 
 
+# --format 옵션을 csv, txt, html로 제한하기 위한 Enum 클래스 정의
 class OutputFormatOption(str, Enum):
     csv = "csv"
     txt = "txt"
@@ -38,6 +39,7 @@ def main(
         list[str],
         typer.Argument(help="조회할 GitHub 저장소 경로입니다. 예: owner/repo1 owner/repo2"),
     ],
+    # 기존 str 타입에서 Enum(OutputFormatOption) 기반 타입으로 변경하여 CLI 검증 추가
     format: Annotated[
         OutputFormatOption,
         typer.Option("--format", "-f", help="출력 파일 형식을 지정합니다. (csv | txt | html)"),
@@ -56,6 +58,7 @@ def main(
         str | None,
         typer.Option("--token", "-t", help="GitHub Personal Access Token. 미제공 시 GITHUB_TOKEN 환경 변수를 사용합니다."),
     ] = None,
+    # 요구사항에 명시된 다중 저장소 집계 여부 선택을 위한 플래그 추가
     aggregate: Annotated[
         bool,
         typer.Option("--aggregate", help="여러 저장소의 결과를 하나로 합산하여 전체 기여 점수를 출력합니다."),
@@ -104,13 +107,14 @@ def main(
             print(f"오류 ({repo}): {error}", file=sys.stderr)
             raise typer.Exit(1) from error
 
+    # --- 수집 완료 데이터 출력 및 집계(--aggregate) 제어 로직 ---
     format_value = format.value
 
     if aggregate:
         try:
             total_scores = calculate_total_scores(all_contributions)
             
-            # [변경점] output_writer가 100% 호환되도록 중첩 딕셔너리 구조로 직접 매핑 변환
+            # output_writer가 100% 호환되도록 중첩 딕셔너리 구조로 직접 매핑 변환
             aggregated_results = []
             for score in total_scores:
                 aggregated_results.append({
@@ -127,7 +131,7 @@ def main(
             raise typer.Exit(1) from error
     else:
         try:
-            # [변경점] 개별 출력 모드에서도 output_writer 규격에 맞추어 변환 처리
+            # 개별 출력 모드에서도 output_writer 규격에 맞추어 변환 처리
             flatten_results = []
             for repo_contribs in all_contributions:
                 for contrib in repo_contribs:
