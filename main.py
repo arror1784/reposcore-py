@@ -66,6 +66,10 @@ def main(
         bool,
         typer.Option("--aggregate", help="여러 저장소의 결과를 하나로 합산하여 전체 기여 점수를 출력합니다."),
     ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option("--no-cache", help="캐시를 사용하지 않고 GitHub API에서 최신 데이터를 다시 조회합니다."),
+    ] = False,
 ) -> None:
     """Fetch basic repository counts from GitHub GraphQL API."""
 
@@ -84,8 +88,9 @@ def main(
         try:
             owner, repo_name = split_repository(repo)
 
-            cache_path = None
-            if output:
+            if no_cache:
+                cache_path = None
+            elif output:
                 cache_path = Path(output) / f"{owner}_{repo_name}" / "cache.json"
             else:
                 cache_path = Path(".cache") / f"{owner}_{repo_name}" / "cache.json"
