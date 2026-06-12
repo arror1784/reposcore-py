@@ -5,10 +5,10 @@ A CLI for scoring student participation in an open-source class repo, implemente
 ## Synopsis
 
 ```text
-Usage: reposcore [OPTIONS] REPOS...
-
- Fetch basic repository counts from GitHub GraphQL API.
-
+Usage: reposcore [OPTIONS] REPOS...                                            
+                                                                                
+ Fetch basic repository counts from GitHub GraphQL API.                         
+                                                                                
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repos      REPOS...  조회할 GitHub 저장소 경로입니다. 예: owner/repo1   │
 │                           owner/repo2                                        │
