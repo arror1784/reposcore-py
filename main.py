@@ -4,21 +4,31 @@ from datetime import datetime, timezone
 import os
 import sys
 from enum import Enum
-from typing import Annotated
+from importlib.metadata import version, PackageNotFoundError
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
-from calc_score import calculate_total_scores, UserContributionCounts
-from gh_service import fetch_contributions
-from output_writer import build_output, write_output
 from cache_manager import load_cache, save_cache
+from calc_score import UserContributionCounts, calculate_total_scores
+from gh_service import fetch_contributions, fetch_multiple_contributions
+from output_writer import build_output, write_output
 
 DEFAULT_REPOSITORY = "oss2026hnu/reposcore-py"
 
 app = typer.Typer(help="reposcore-py CLI")
 
+
+def version_callback(value: bool) -> None:
+    if value:
+        try:
+            ver = version("reposcore-py")
+        except PackageNotFoundError:
+            ver = "unknown"
+        typer.echo(ver)
+        raise typer.Exit()
 
 
 # --format 옵션을 csv, txt, html로 제한하기 위한 Enum 클래스 정의
@@ -37,12 +47,97 @@ def split_repository(repository: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _dump_contributions(
+    contributions: list[UserContributionCounts],
+) -> list[dict]:
+    return [
+        contribution.model_dump()
+        if hasattr(contribution, "model_dump")
+        else vars(contribution)
+        for contribution in contributions
+    ]
+
+
+def _load_or_fetch_contributions(
+    repos: list[str],
+    token: str,
+    output: str | None,
+    no_cache: bool = False,
+) -> list[list[UserContributionCounts]]:
+    all_contributions: list[list[UserContributionCounts]] = [[] for _ in repos]
+    cache_paths: list[Path | None] = []
+    missing_indexes: list[int] = []
+    missing_repos: list[str] = []
+
+    for index, repo in enumerate(repos):
+        owner, repo_name = split_repository(repo)
+        cache_path = None
+
+        # --no-cache 가 지정되면 캐시 경로를 만들지 않아 읽기/쓰기 모두 건너뜁니다.
+        if not no_cache and output:
+            cache_path = Path(output) / f"{owner}_{repo_name}" / "cache.json"
+
+        cache_paths.append(cache_path)
+        cached_data = load_cache(cache_path) if cache_path else {}
+
+        if "contributions" in cached_data:
+            all_contributions[index] = [
+                UserContributionCounts(**contribution)
+                for contribution in cached_data["contributions"]
+            ]
+        else:
+            missing_indexes.append(index)
+            missing_repos.append(repo)
+
+    if missing_repos:
+        if len(missing_repos) == 1:
+            fetched_contributions = [fetch_contributions(missing_repos[0], token)]
+        else:
+            fetched_contributions = fetch_multiple_contributions(
+                missing_repos,
+                token,
+            )
+
+        for index, repo, contributions in zip(
+            missing_indexes,
+            missing_repos,
+            fetched_contributions,
+            strict=True,
+        ):
+            all_contributions[index] = contributions
+            cache_path = cache_paths[index]
+
+            if cache_path:
+                owner, repo_name = split_repository(repo)
+                save_cache(
+                    cache_path,
+                    {
+                        "metadata": {
+                            "repository": repo,
+                            "owner": owner,
+                            "name": repo_name,
+                            "schemaVersion": 1,
+                            "generatedAt": datetime.now(timezone.utc)
+                            .isoformat(timespec="seconds")
+                            .replace("+00:00", "Z"),
+                        },
+                        "contributions": _dump_contributions(contributions),
+                    },
+                )
+
+    return all_contributions
+
+
 @app.command()
 def main(
     repos: Annotated[
         list[str],
         typer.Argument(help="조회할 GitHub 저장소 경로입니다. 예: owner/repo1 owner/repo2"),
     ],
+    _version: Annotated[
+        bool,
+        typer.Option("--version", "-v", help="현재 버전을 출력하고 종료합니다.", is_eager=True, callback=version_callback),
+    ] = False,
     # 기존 str 타입에서 Enum(OutputFormatOption) 기반 타입으로 변경하여 CLI 검증 추가
     format: Annotated[
         OutputFormatOption,
@@ -51,7 +146,8 @@ def main(
     output: Annotated[
         str | None,
         typer.Option(
-            "--output", "-o",
+            "--output",
+            "-o",
             help=(
                 "결과를 저장할 출력 디렉터리 경로입니다. "
                 "생략하면 파일로 저장하지 않고 stdout에 출력합니다. 예: ./result"
@@ -67,6 +163,10 @@ def main(
         bool,
         typer.Option("--aggregate", help="여러 저장소의 결과를 하나로 합산하여 전체 기여 점수를 출력합니다."),
     ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option("--no-cache", help="캐시를 사용하지 않고 GitHub API에서 최신 데이터를 다시 조회합니다."),
+    ] = False,
 ) -> None:
     """Fetch basic repository counts from GitHub GraphQL API."""
 
@@ -79,72 +179,54 @@ def main(
         typer.echo("오류: GITHUB_TOKEN 환경 변수 또는 --token 옵션이 필요합니다.", err=True)
         raise typer.Exit(1)
 
-    all_contributions: list[list[UserContributionCounts]] = []
+    try:
+        all_contributions = _load_or_fetch_contributions(
+            repos,
+            resolved_token,
+            output,
+            no_cache,
+        )
 
-    for repo in repos:
-        try:
-            owner, repo_name = split_repository(repo)
+    except ValueError as error:
+        print(f"오류: {error}", file=sys.stderr)
+        raise typer.Exit(1) from error
 
-            cache_path = None
-            if output:
-                cache_path = Path(output) / f"{owner}_{repo_name}" / "cache.json"
-            else:
-                cache_path = Path(".cache") / f"{owner}_{repo_name}" / "cache.json"
+    except TransportQueryError as error:
+        print(
+            "오류: 저장소를 찾을 수 없습니다. 존재 여부와 권한을 확인하세요. "
+            f"(Detail: {error})",
+            file=sys.stderr,
+        )
+        raise typer.Exit(3) from error
 
-            cached_data = {}
-            if cache_path:
-                cached_data = load_cache(cache_path)
+    except TransportServerError as error:
+        status_code = getattr(error, "code", None)
 
-            if cached_data and "contributions" in cached_data:
-                contributions = [UserContributionCounts(**c) for c in cached_data["contributions"]]
-            else:
-                contributions = fetch_contributions(repo, resolved_token)
-                if cache_path:
-                    dumped = [
-                        c.model_dump() if hasattr(c, "model_dump") else vars(c)
-                        for c in contributions
-                    ]
-                    save_cache(
-                        cache_path,
-                        {
-                            "metadata": {
-                                "repository": repo,
-                                "owner": owner,
-                                "name": repo_name,
-                                "schemaVersion": 1,
-                                "generatedAt": datetime.now(timezone.utc)
-                                .isoformat(timespec="seconds")
-                                .replace("+00:00", "Z"),
-                            },
-                            "contributions": dumped,
-                        },
-                    )
-            all_contributions.append(contributions)
+        if status_code in [403, 429]:
+            print(
+                "오류: GitHub API 호출 한도(Rate Limit)를 초과했습니다. "
+                f"잠시 후 다시 시도하세요. (Status: {status_code})",
+                file=sys.stderr,
+            )
+            raise typer.Exit(2) from error
+        if status_code == 401:
+            print(
+                "오류: GitHub API 인증에 실패했습니다. "
+                f"GITHUB_TOKEN을 확인하세요. (Status: {status_code})",
+                file=sys.stderr,
+            )
+            raise typer.Exit(4) from error
 
-        except ValueError as error:
-            print(f"오류 ({repo}): {error}", file=sys.stderr)
-            raise typer.Exit(1) from error
+        print(
+            "오류: GitHub 서버 통신 중 HTTP 오류가 발생했습니다. "
+            f"(Status: {status_code})",
+            file=sys.stderr,
+        )
+        raise typer.Exit(1) from error
 
-        except TransportQueryError as error:
-            print(f"오류 ({repo}): 저장소를 찾을 수 없습니다. 존재 여부와 권한을 확인하세요. (Detail: {error})", file=sys.stderr)
-            raise typer.Exit(3) from error
-
-        except TransportServerError as error:
-            status_code = getattr(error, "code", None)
-
-            if status_code in [403, 429]:
-                print(f"오류 ({repo}): GitHub API 호출 한도(Rate Limit)를 초과했습니다. 잠시 후 다시 시도하세요. (Status: {status_code})", file=sys.stderr)
-                raise typer.Exit(2) from error
-            elif status_code == 401:
-                print(f"오류 ({repo}): GitHub API 인증에 실패했습니다. GITHUB_TOKEN을 확인하세요. (Status: {status_code})", file=sys.stderr)
-                raise typer.Exit(4) from error
-            else:
-                print(f"오류 ({repo}): GitHub 서버 통신 중 HTTP 오류가 발생했습니다. (Status: {status_code})", file=sys.stderr)
-                raise typer.Exit(1) from error
-
-        except Exception as error:
-            print(f"오류 ({repo}): {error}", file=sys.stderr)
-            raise typer.Exit(1) from error
+    except Exception as error:
+        print(f"오류: {error}", file=sys.stderr)
+        raise typer.Exit(1) from error
 
     # --- 수집 완료 데이터 출력 및 집계(--aggregate) 제어 로직 ---
     format_value = format.value
@@ -156,10 +238,11 @@ def main(
             # output_writer가 100% 호환되도록 중첩 딕셔너리 구조로 직접 매핑 변환
             aggregated_results = []
             for score in total_scores:
+                contrib = score.contribution
                 aggregated_results.append({
-                    "nameWithOwner": score.user,
-                    "issues": {"totalCount": score.feature_bug_issue_count + score.doc_issue_count},
-                    "pullRequests": {"totalCount": score.feature_bug_pr_count + score.doc_pr_count + score.typo_pr_count},
+                    "nameWithOwner": contrib.user,
+                    "issues": {"totalCount": contrib.feature_bug_issue_count + contrib.doc_issue_count},
+                    "pullRequests": {"totalCount": contrib.feature_bug_pr_count + contrib.doc_pr_count + contrib.typo_pr_count},
                     "totalScore": score.score
                 })
             content = build_output(aggregated_results, format_value)
@@ -173,11 +256,20 @@ def main(
             flatten_results = []
             for repo_contribs in all_contributions:
                 for contrib in repo_contribs:
-                    flatten_results.append({
-                        "nameWithOwner": contrib.user,
-                        "issues": {"totalCount": contrib.feature_bug_issue_count + contrib.doc_issue_count},
-                        "pullRequests": {"totalCount": contrib.feature_bug_pr_count + contrib.doc_pr_count + contrib.typo_pr_count}
-                    })
+                    flatten_results.append(
+                        {
+                            "nameWithOwner": contrib.user,
+                            "issues": {
+                                "totalCount": contrib.feature_bug_issue_count
+                                + contrib.doc_issue_count,
+                            },
+                            "pullRequests": {
+                                "totalCount": contrib.feature_bug_pr_count
+                                + contrib.doc_pr_count
+                                + contrib.typo_pr_count,
+                            },
+                        }
+                    )
 
             content = build_output(flatten_results, format_value)
             write_output(content, output, format_value)
