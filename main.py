@@ -28,7 +28,7 @@ class OutputFormatOption(str, Enum):
 
 
 def split_repository(repository: str) -> tuple[str, str]:
-    parts = repository.split("/", maxsplit=1)
+    parts = repository.split("/")
 
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ValueError("저장소는 owner/repo 형식이어야 합니다.")
@@ -72,20 +72,23 @@ def main(
     if len(repos) == 0:
         print("오류: 저장소를 하나 이상 입력해주세요.", file=sys.stderr)
         raise typer.Exit(1)
-        
+
     resolved_token = token or os.environ.get("GITHUB_TOKEN")
     if not resolved_token:
         typer.echo("오류: GITHUB_TOKEN 환경 변수 또는 --token 옵션이 필요합니다.", err=True)
         raise typer.Exit(1)
-        
+
     all_contributions: list[list[UserContributionCounts]] = []
-    
+
     for repo in repos:
         try:
+            owner, repo_name = split_repository(repo)
+
             cache_path = None
             if output:
-                owner, repo_name = split_repository(repo)
                 cache_path = Path(output) / f"{owner}_{repo_name}" / "cache.json"
+            else:
+                cache_path = Path(".cache") / f"{owner}_{repo_name}" / "cache.json"
 
             cached_data = {}
             if cache_path:
@@ -97,13 +100,12 @@ def main(
                 contributions = fetch_contributions(repo, resolved_token)
                 if cache_path:
                     dumped = [
-                        c.model_dump() if hasattr(c, "model_dump") else vars(c) 
+                        c.model_dump() if hasattr(c, "model_dump") else vars(c)
                         for c in contributions
                     ]
                     save_cache(cache_path, {"contributions": dumped})
-
             all_contributions.append(contributions)
-        
+
         except ValueError as error:
             print(f"오류 ({repo}): {error}", file=sys.stderr)
             raise typer.Exit(1) from error
@@ -124,7 +126,7 @@ def main(
             else:
                 print(f"오류 ({repo}): GitHub 서버 통신 중 HTTP 오류가 발생했습니다. (Status: {status_code})", file=sys.stderr)
                 raise typer.Exit(1) from error
-        
+
         except Exception as error:
             print(f"오류 ({repo}): {error}", file=sys.stderr)
             raise typer.Exit(1) from error
@@ -135,7 +137,7 @@ def main(
     if aggregate:
         try:
             total_scores = calculate_total_scores(all_contributions)
-            
+
             # output_writer가 100% 호환되도록 중첩 딕셔너리 구조로 직접 매핑 변환
             aggregated_results = []
             for score in total_scores:
@@ -161,7 +163,7 @@ def main(
                         "issues": {"totalCount": contrib.feature_bug_issue_count + contrib.doc_issue_count},
                         "pullRequests": {"totalCount": contrib.feature_bug_pr_count + contrib.doc_pr_count + contrib.typo_pr_count}
                     })
-                    
+
             content = build_output(flatten_results, format_value)
             write_output(content, output, format_value)
         except Exception as error:
