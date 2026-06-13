@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import os
 import sys
@@ -97,8 +98,9 @@ def _load_or_fetch_contributions(
                 token,
             )
 
-        for index, contributions in zip(
+        for index, repo, contributions in zip(
             missing_indexes,
+            missing_repos,
             fetched_contributions,
             strict=True,
         ):
@@ -106,9 +108,21 @@ def _load_or_fetch_contributions(
             cache_path = cache_paths[index]
 
             if cache_path:
+                owner, repo_name = split_repository(repo)
                 save_cache(
                     cache_path,
-                    {"contributions": _dump_contributions(contributions)},
+                    {
+                        "metadata": {
+                            "repository": repo,
+                            "owner": owner,
+                            "name": repo_name,
+                            "schemaVersion": 1,
+                            "generatedAt": datetime.now(timezone.utc)
+                            .isoformat(timespec="seconds")
+                            .replace("+00:00", "Z"),
+                        },
+                        "contributions": _dump_contributions(contributions),
+                    },
                 )
 
     return all_contributions
