@@ -58,6 +58,10 @@ Options
                                                 점수를 출력합니다.
   --no-cache                                    캐시를 사용하지 않고 GitHub API에서 최신 데이터를
                                                 다시 조회합니다.
+  --since                       TEXT            이 날짜 이후의 기여만 점수 계산에 포함합니다. 예:
+                                                2026-06-01 (YYYY-MM-DD)
+  --until                       TEXT            이 날짜까지의 기여만 점수 계산에 포함합니다. 예:
+                                                2026-06-10 (YYYY-MM-DD)
   --install-completion                          Install completion for the current shell.
   --show-completion                             Show completion for the current shell, to copy it
                                                 or customize the installation.
