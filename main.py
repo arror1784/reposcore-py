@@ -12,7 +12,12 @@ import typer
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
 from cache_manager import load_cache, save_cache
-from calc_score import UserContributionCounts, UserScore, calculate_repository_scores, calculate_total_scores
+from calc_score import (
+    UserContributionCounts,
+    UserScore,
+    calculate_repository_scores,
+    calculate_total_scores,
+)
 from gh_service import fetch_contributions, fetch_multiple_contributions
 from output_writer import build_output, write_output
 
@@ -57,6 +62,7 @@ def _dump_contributions(
         for contribution in contributions
     ]
 
+
 def _score_to_result(score: UserScore) -> dict:
     """UserScore를 output_writer가 기대하는 dict 형태로 변환합니다."""
     contribution = score.contribution
@@ -73,6 +79,7 @@ def _score_to_result(score: UserScore) -> dict:
         },
         "totalScore": score.score,
     }
+
 
 def _load_or_fetch_contributions(
     repos: list[str],
