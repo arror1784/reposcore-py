@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 from gql import Client, gql
 from gql.transport.requests import RequestsHTTPTransport
@@ -441,3 +442,52 @@ def fetch_multiple_contributions(
     return [
         list(contributions.values()) for contributions in contributions_by_repository
     ]
+
+
+# ── 이슈 선점 데이터 수집 ──────────────────────────────────────────
+def fetch_open_issue_claims(repository: str, token: str) -> list[dict[str, Any]]:
+    """GitHub GraphQL API를 조회하여 열린 이슈 정보 및 가장 최근 댓글 명세를 수집합니다."""
+    owner, name = _split_repository(repository)
+    client = create_client(token)
+
+    query = gql("""
+    query($owner: String!, $name: String!) {
+        repository(owner: $owner, name: $name) {
+            issues(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
+                nodes {
+                    number
+                    title
+                    url
+                    author {
+                        login
+                    }
+                    labels(first: 10) {
+                        nodes {
+                            name
+                        }
+                    }
+                    comments(last: 1) {
+                        nodes {
+                            author {
+                                login
+                            }
+                            body
+                            createdAt
+                        }
+                    }
+                }
+            }
+        }
+    }
+    """)
+
+    with client as session:
+        result = session.execute(
+            query,
+            variable_values={
+                "owner": owner,
+                "name": name,
+            },
+        )
+
+    return result.get("repository", {}).get("issues", {}).get("nodes", [])

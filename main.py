@@ -18,12 +18,24 @@ from calc_score import (
     calculate_repository_scores,
     calculate_total_scores,
 )
+# fetch_open_issue_claims 함수 임포트 추가
 from gh_service import (
     DEFAULT_PAGE_SIZE,
     fetch_contributions,
     fetch_multiple_contributions,
+    fetch_open_issue_claims,
 )
 from output_writer import build_output, write_output
+
+DEFAULT_REPOSITORY = "oss2026hnu/reposcore-py"
+
+# 기본 선점 키워드 상수 추가
+DEFAULT_CLAIM_KEYWORDS = [
+    "제가 하겠습니다",
+    "진행하겠습니다",
+    "할게요",
+    "I'll take this",
+]
 
 CACHE_SCHEMA_VERSION = 1
 CACHE_TTL_SECONDS = 60 * 60
@@ -254,7 +266,7 @@ def main(
                 "미제공 시 GITHUB_TOKEN 환경 변수를 사용합니다."
             ),
         ),
-    ] = None,
+    ],
     # 요구사항에 명시된 다중 저장소 집계 여부 선택을 위한 플래그 추가
     aggregate: Annotated[
         bool,
@@ -290,6 +302,22 @@ def main(
             ),
         ),
     ] = None,
+    # main.py에 --claims 옵션 추가
+    claims: Annotated[
+        bool,
+        typer.Option(
+            "--claims",
+            help="열린 issue의 선점 현황을 조회합니다.",
+        ),
+    ] = False,
+    # main.py에 --keywords 옵션 추가
+    keywords: Annotated[
+        str | None,
+        typer.Option(
+            "--keywords",
+            help="이슈 선점 키워드 목록입니다. 쉼표로 구분합니다.",
+        ),
+    ] = None,
     page_size: Annotated[
         int,
         typer.Option(
@@ -313,6 +341,78 @@ def main(
             "오류: GITHUB_TOKEN 환경 변수 또는 --token 옵션이 필요합니다.", err=True
         )
         raise typer.Exit(1)
+
+    # --claims 모드 조건 부합 시 점수 계산 흐름으로 진입하지 않고 선점 현황만 출력 후 즉시 종료
+    if claims:
+        claim_keywords = (
+            [kw.strip() for kw in keywords.split(",")]
+            if keywords
+            else DEFAULT_CLAIM_KEYWORDS
+        )
+
+        for repo in repos:
+            try:
+                open_issues = fetch_open_issue_claims(repo, resolved_token)
+                
+                claimed_issues = []
+                unclaimed_issues = []
+                
+                for issue in open_issues:
+                    matched_kw = None
+                    claimant = None
+                    
+                    comments_nodes = issue.get("comments", {}).get("nodes", [])
+                    if comments_nodes:
+                        latest_comment = comments_nodes[0]
+                        body = latest_comment.get("body", "")
+                        
+                        # 댓글 본문에서 선점 키워드 감지
+                        for kw in claim_keywords:
+                            if kw in body:
+                                matched_kw = kw
+                                claimant = (
+                                    latest_comment.get("author", {}).get("login")
+                                    if latest_comment.get("author")
+                                    else "알 수 없음"
+                                )
+                                break
+                    
+                    if matched_kw:
+                        claimed_issues.append({
+                            "number": issue["number"],
+                            "title": issue["title"],
+                            "claimant": claimant,
+                            "keyword": matched_kw
+                        })
+                    else:
+                        unclaimed_issues.append({
+                            "number": issue["number"],
+                            "title": issue["title"]
+                        })
+                
+                if len(repos) > 1:
+                    print(f"=== Repository: {repo} ===")
+                
+                # 요구사항 레이아웃 명세대로 분리 출력
+                print("Claimed Issues\n")
+                for ci in claimed_issues:
+                    print(f"- #{ci['number']} {ci['title']}")
+                    print(f"  Claimed by: {ci['claimant']}")
+                    print(f"  Matched keyword: {ci['keyword']}")
+                if not claimed_issues:
+                    print("(선점된 이슈가 없습니다.)\n")
+                
+                print("\nUnclaimed Issues\n")
+                for ui in unclaimed_issues:
+                    print(f"- #{ui['number']} {ui['title']}")
+                if not unclaimed_issues:
+                    print("(미선점된 이슈가 없습니다.)\n")
+                print()
+                
+            except Exception as error:
+                print(f"오류 ({repo}): {error}", file=sys.stderr)
+                raise typer.Exit(1) from error
+        raise typer.Exit(0)
 
     parsed_since: date | None = None
     parsed_until: date | None = None
