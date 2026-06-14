@@ -62,6 +62,8 @@ Options
                                                 2026-06-01 (YYYY-MM-DD)
   --until                       TEXT            이 날짜까지의 기여만 점수 계산에 포함합니다. 예:
                                                 2026-06-10 (YYYY-MM-DD)
+  --claims                                      열린 issue의 선점 현황을 조회합니다.
+  --keywords                    TEXT            이슈 선점 키워드 목록입니다. 쉼표로 구분합니다.
   --install-completion                          Install completion for the current shell.
   --show-completion                             Show completion for the current shell, to copy it
                                                 or customize the installation.
