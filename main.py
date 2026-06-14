@@ -18,7 +18,11 @@ from calc_score import (
     calculate_repository_scores,
     calculate_total_scores,
 )
-from gh_service import fetch_contributions, fetch_multiple_contributions
+from gh_service import (
+    DEFAULT_PAGE_SIZE,
+    fetch_contributions,
+    fetch_multiple_contributions,
+)
 from output_writer import build_output, write_output
 
 app = typer.Typer(help="reposcore-py CLI")
@@ -86,6 +90,7 @@ def _load_or_fetch_contributions(
     no_cache: bool = False,
     since: date | None = None,
     until: date | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
 ) -> list[list[UserContributionCounts]]:
     all_contributions: list[list[UserContributionCounts]] = [[] for _ in repos]
     cache_paths: list[Path | None] = []
@@ -115,7 +120,7 @@ def _load_or_fetch_contributions(
     if missing_repos:
         if len(missing_repos) == 1:
             fetched_contributions = [
-                fetch_contributions(missing_repos[0], token, since, until)
+                fetch_contributions(missing_repos[0], token, since, until, page_size)
             ]
         else:
             fetched_contributions = fetch_multiple_contributions(
@@ -123,6 +128,7 @@ def _load_or_fetch_contributions(
                 token,
                 since,
                 until,
+                page_size,
             )
 
         for index, repo, contributions in zip(
@@ -237,6 +243,16 @@ def main(
             ),
         ),
     ] = None,
+    page_size: Annotated[
+        int,
+        typer.Option(
+            "--page-size",
+            help="GraphQL 페이지네이션의 페이지 크기입니다. (1~100)",
+            envvar="REPOSCORE_PAGE_SIZE",
+            min=1,
+            max=100,
+        ),
+    ] = DEFAULT_PAGE_SIZE,
 ) -> None:
     """Fetch basic repository counts from GitHub GraphQL API."""
 
@@ -292,6 +308,7 @@ def main(
             no_cache,
             parsed_since,
             parsed_until,
+            page_size,
         )
 
     except ValueError as error:
