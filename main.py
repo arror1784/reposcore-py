@@ -82,7 +82,7 @@ def _score_to_result(score: UserScore) -> dict:
 def _load_or_fetch_contributions(
     repos: list[str],
     token: str,
-    output: str | None,
+    output: str,
     no_cache: bool = False,
     since: date | None = None,
     until: date | None = None,
@@ -97,7 +97,7 @@ def _load_or_fetch_contributions(
         cache_path = None
 
         # --no-cache 가 지정되면 캐시 경로를 만들지 않아 읽기/쓰기 모두 건너뜁니다.
-        if not no_cache and output:
+        if not no_cache:
             cache_path = Path(output) / f"{owner}_{repo_name}" / "cache.json"
 
         cache_paths.append(cache_path)
@@ -181,16 +181,13 @@ def main(
         ),
     ] = OutputFormatOption.txt,
     output: Annotated[
-        str | None,
+        str,
         typer.Option(
             "--output",
             "-o",
-            help=(
-                "결과를 저장할 출력 디렉터리 경로입니다. "
-                "생략하면 파일로 저장하지 않고 stdout에 출력합니다. 예: ./result"
-            ),
+            help="결과를 저장할 출력 디렉터리 경로입니다.",
         ),
-    ] = None,
+    ] = "./result",
     token: Annotated[
         str | None,
         typer.Option(
@@ -350,8 +347,13 @@ def main(
             ]
 
         results = [_score_to_result(score) for score in scores]
+
+        # 사용자가 선택한 형식만 파일로 저장
         content = build_output(results, format_value)
-        write_output(content, output, format_value)
+        saved_path = write_output(content, output, format_value)
+
+        print("결과가 다음 경로에 저장되었습니다:")
+        print(f"  - {saved_path.absolute()}")
     except Exception as error:
         print(f"출력 오류: {error}", file=sys.stderr)
         raise typer.Exit(1) from error

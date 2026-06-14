@@ -92,14 +92,6 @@ def test_build_output_rejects_unsupported_format():
         build_output(SAMPLE, "json")
 
 
-# ── write_output: stdout ───────────────────────────────────
-def test_write_output_to_stdout(capsys):
-    result = write_output("hello-content", None, "csv")
-    captured = capsys.readouterr()
-    assert result is None
-    assert "hello-content" in captured.out
-
-
 # ── write_output: 파일 저장 ────────────────────────────────
 @pytest.mark.parametrize("fmt", ["csv", "txt", "html"])
 def test_write_output_creates_result_file(tmp_path, fmt):

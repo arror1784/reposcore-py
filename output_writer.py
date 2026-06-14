@@ -137,13 +137,9 @@ def build_output(results: list[dict[str, Any]], output_format: str) -> str:
 
 def write_output(
     content: str,
-    output_dir: str | None,
+    output_dir: str,
     output_format: str,
-) -> Path | None:
-    if output_dir is None:
-        print(content)
-        return None
-
+) -> Path:
     normalized_format = normalize_output_format(output_format)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
