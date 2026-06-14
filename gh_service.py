@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 from calc_score import UserContributionCounts
 
+DEFAULT_PAGE_SIZE = 100
+
 
 # ── Pydantic 모델 정의 ──────────────────────────────────────────
 class Author(BaseModel):
@@ -33,6 +35,7 @@ class Node(BaseModel):
     labels: LabelConnection
     createdAt: str | None = None
     mergedAt: str | None = None
+    stateReason: str | None = None
 
 
 class Connection(BaseModel):
@@ -118,15 +121,20 @@ def _add_issue_contribution(
     if node.author is None:
         return
 
+    # 중복 또는 계획되지 않음으로 닫힌 이슈는 제외
+    if node.stateReason in ["DUPLICATE", "NOT_PLANNED"]:
+        return
+
     if not _is_in_date_range(node.createdAt, since, until):
         return
 
-    contribution = _get_contribution(contributions, node.author.login)
     labels = [label.name.lower() for label in node.labels.nodes]
 
     if "documentation" in labels:
+        contribution = _get_contribution(contributions, node.author.login)
         contribution.doc_issue_count += 1
     elif "bug" in labels or "enhancement" in labels:
+        contribution = _get_contribution(contributions, node.author.login)
         contribution.feature_bug_issue_count += 1
 
 
@@ -142,19 +150,21 @@ def _add_pr_contribution(
     if not _is_in_date_range(node.mergedAt, since, until):
         return
 
-    contribution = _get_contribution(contributions, node.author.login)
     labels = [label.name.lower() for label in node.labels.nodes]
 
     if "documentation" in labels:
+        contribution = _get_contribution(contributions, node.author.login)
         contribution.doc_pr_count += 1
     elif "typo" in labels:
+        contribution = _get_contribution(contributions, node.author.login)
         contribution.typo_pr_count += 1
     elif "bug" in labels or "enhancement" in labels:
+        contribution = _get_contribution(contributions, node.author.login)
         contribution.feature_bug_pr_count += 1
 
 
 def _build_issue_alias_query(indexes: list[int]):
-    variable_definitions: list[str] = []
+    variable_definitions: list[str] = ["$pageSize: Int!"]
     repository_blocks: list[str] = []
 
     for index in indexes:
@@ -168,7 +178,11 @@ def _build_issue_alias_query(indexes: list[int]):
         repository_blocks.append(
             f"""
             repo{index}: repository(owner: $owner{index}, name: $name{index}) {{
-                issues(first: 100, after: $after{index}, states: [OPEN, CLOSED]) {{
+                issues(
+                    first: $pageSize,
+                    after: $after{index},
+                    states: [OPEN, CLOSED],
+                ) {{
                     pageInfo {{
                         hasNextPage
                         endCursor
@@ -176,6 +190,7 @@ def _build_issue_alias_query(indexes: list[int]):
                     nodes {{
                         author {{ login }}
                         createdAt
+                        stateReason
                         labels(first: 10) {{
                             nodes {{ name }}
                         }}
@@ -195,7 +210,7 @@ def _build_issue_alias_query(indexes: list[int]):
 
 
 def _build_pr_alias_query(indexes: list[int]):
-    variable_definitions: list[str] = []
+    variable_definitions: list[str] = ["$pageSize: Int!"]
     repository_blocks: list[str] = []
 
     for index in indexes:
@@ -209,7 +224,11 @@ def _build_pr_alias_query(indexes: list[int]):
         repository_blocks.append(
             f"""
             repo{index}: repository(owner: $owner{index}, name: $name{index}) {{
-                pullRequests(first: 100, after: $after{index}, states: [MERGED]) {{
+                pullRequests(
+                    first: $pageSize,
+                    after: $after{index},
+                    states: [MERGED],
+                ) {{
                     pageInfo {{
                         hasNextPage
                         endCursor
@@ -241,16 +260,24 @@ def fetch_contributions(
     token: str,
     since: date | None = None,
     until: date | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
 ) -> list[UserContributionCounts]:
     owner, name = _split_repository(repository)
     client = create_client(token)
     contributions: dict[str, UserContributionCounts] = {}
 
-    # 이슈 수집
-    issue_query = gql("""
-    query($owner: String!, $name: String!, $after: String) {
+    combined_query = gql("""
+    query(
+        $owner: String!,
+        $name: String!,
+        $pageSize: Int!,
+        $fetchIssues: Boolean!,
+        $issueCursor: String,
+        $fetchPRs: Boolean!,
+        $prCursor: String
+    ) {
         repository(owner: $owner, name: $name) {
-            issues(first: 100, after: $after, states: [OPEN, CLOSED]) {
+            issues(first: $pageSize, after: $issueCursor, states: [OPEN, CLOSED]) @include(if: $fetchIssues) {
                 pageInfo {
                     hasNextPage
                     endCursor
@@ -258,41 +285,13 @@ def fetch_contributions(
                 nodes {
                     author { login }
                     createdAt
+                    stateReason
                     labels(first: 10) {
                         nodes { name }
                     }
                 }
             }
-        }
-    }
-    """)
-
-    cursor = None
-    while True:
-        with client as session:
-            result = session.execute(
-                issue_query,
-                variable_values={
-                    "owner": owner,
-                    "name": name,
-                    "after": cursor,
-                },
-            )
-
-        issues = Connection.model_validate(result["repository"]["issues"])
-
-        for node in issues.nodes:
-            _add_issue_contribution(contributions, node, since, until)
-
-        if not issues.pageInfo.hasNextPage:
-            break
-        cursor = issues.pageInfo.endCursor
-
-    # PR 수집
-    pr_query = gql("""
-    query($owner: String!, $name: String!, $after: String) {
-        repository(owner: $owner, name: $name) {
-            pullRequests(first: 100, after: $after, states: [MERGED]) {
+            pullRequests(first: $pageSize, after: $prCursor, states: [MERGED]) @include(if: $fetchPRs) {
                 pageInfo {
                     hasNextPage
                     endCursor
@@ -309,26 +308,43 @@ def fetch_contributions(
     }
     """)
 
-    cursor = None
-    while True:
-        with client as session:
+    issue_cursor = None
+    pr_cursor = None
+    has_next_issue = True
+    has_next_pr = True
+
+    with client as session:
+        while has_next_issue or has_next_pr:
             result = session.execute(
-                pr_query,
+                combined_query,
                 variable_values={
                     "owner": owner,
                     "name": name,
-                    "after": cursor,
+                    "pageSize": page_size,
+                    "fetchIssues": has_next_issue,
+                    "issueCursor": issue_cursor,
+                    "fetchPRs": has_next_pr,
+                    "prCursor": pr_cursor,
                 },
             )
 
-        prs = Connection.model_validate(result["repository"]["pullRequests"])
+            repo_data = result.get("repository", {})
 
-        for node in prs.nodes:
-            _add_pr_contribution(contributions, node, since, until)
+            if has_next_issue and "issues" in repo_data:
+                issues = Connection.model_validate(repo_data["issues"])
+                for node in issues.nodes:
+                    _add_issue_contribution(contributions, node, since, until)
 
-        if not prs.pageInfo.hasNextPage:
-            break
-        cursor = prs.pageInfo.endCursor
+                has_next_issue = issues.pageInfo.hasNextPage
+                issue_cursor = issues.pageInfo.endCursor
+
+            if has_next_pr and "pullRequests" in repo_data:
+                prs = Connection.model_validate(repo_data["pullRequests"])
+                for node in prs.nodes:
+                    _add_pr_contribution(contributions, node, since, until)
+
+                has_next_pr = prs.pageInfo.hasNextPage
+                pr_cursor = prs.pageInfo.endCursor
 
     return list(contributions.values())
 
@@ -338,6 +354,7 @@ def fetch_multiple_contributions(
     token: str,
     since: date | None = None,
     until: date | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
 ) -> list[list[UserContributionCounts]]:
     """여러 저장소의 기여 데이터를 GraphQL repository alias를 사용해 조회합니다."""
 
@@ -363,7 +380,7 @@ def fetch_multiple_contributions(
                 index for index, active in enumerate(issue_active) if active
             ]
 
-            variables = {}
+            variables: dict[str, str | int | None] = {"pageSize": page_size}
             for index in active_indexes:
                 owner, name = repository_parts[index]
                 variables[f"owner{index}"] = owner
@@ -394,7 +411,7 @@ def fetch_multiple_contributions(
         while any(pr_active):
             active_indexes = [index for index, active in enumerate(pr_active) if active]
 
-            variables = {}
+            variables: dict[str, str | int | None] = {"pageSize": page_size}
             for index in active_indexes:
                 owner, name = repository_parts[index]
                 variables[f"owner{index}"] = owner

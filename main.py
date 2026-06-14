@@ -19,7 +19,12 @@ from calc_score import (
     calculate_total_scores,
 )
 # fetch_open_issue_claims 함수 임포트 추가
-from gh_service import fetch_contributions, fetch_multiple_contributions, fetch_open_issue_claims
+from gh_service import (
+    DEFAULT_PAGE_SIZE,
+    fetch_contributions,
+    fetch_multiple_contributions,
+    fetch_open_issue_claims,
+)
 from output_writer import build_output, write_output
 
 DEFAULT_REPOSITORY = "oss2026hnu/reposcore-py"
@@ -31,6 +36,9 @@ DEFAULT_CLAIM_KEYWORDS = [
     "할게요",
     "I'll take this",
 ]
+
+CACHE_SCHEMA_VERSION = 1
+CACHE_TTL_SECONDS = 60 * 60
 
 app = typer.Typer(help="reposcore-py CLI")
 
@@ -60,6 +68,48 @@ def split_repository(repository: str) -> tuple[str, str]:
 
     return parts[0], parts[1]
 
+def _format_cache_date(value: date | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _is_cache_valid(
+    cached_data: dict,
+    since: date | None,
+    until: date | None,
+) -> bool:
+    if "contributions" not in cached_data:
+        return False
+
+    metadata = cached_data.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+
+    if metadata.get("schemaVersion") != CACHE_SCHEMA_VERSION:
+        return False
+
+    if metadata.get("since") != _format_cache_date(since):
+        return False
+
+    if metadata.get("until") != _format_cache_date(until):
+        return False
+
+    generated_at = metadata.get("generatedAt")
+    if not isinstance(generated_at, str):
+        return False
+
+    try:
+        generated_datetime = datetime.fromisoformat(
+            generated_at.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return False
+
+    now = datetime.now(timezone.utc)
+
+    if (now - generated_datetime).total_seconds() > CACHE_TTL_SECONDS:
+        return False
+
+    return True
 
 def _dump_contributions(
     contributions: list[UserContributionCounts],
@@ -93,10 +143,11 @@ def _score_to_result(score: UserScore) -> dict:
 def _load_or_fetch_contributions(
     repos: list[str],
     token: str,
-    output: str | None,
+    output: str,
     no_cache: bool = False,
     since: date | None = None,
     until: date | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
 ) -> list[list[UserContributionCounts]]:
     all_contributions: list[list[UserContributionCounts]] = [[] for _ in repos]
     cache_paths: list[Path | None] = []
@@ -108,13 +159,13 @@ def _load_or_fetch_contributions(
         cache_path = None
 
         # --no-cache 가 지정되면 캐시 경로를 만들지 않아 읽기/쓰기 모두 건너뜁니다.
-        if not no_cache and output:
+        if not no_cache:
             cache_path = Path(output) / f"{owner}_{repo_name}" / "cache.json"
 
         cache_paths.append(cache_path)
         cached_data = load_cache(cache_path) if cache_path else {}
 
-        if "contributions" in cached_data:
+        if _is_cache_valid(cached_data, since, until):
             all_contributions[index] = [
                 UserContributionCounts(**contribution)
                 for contribution in cached_data["contributions"]
@@ -126,7 +177,7 @@ def _load_or_fetch_contributions(
     if missing_repos:
         if len(missing_repos) == 1:
             fetched_contributions = [
-                fetch_contributions(missing_repos[0], token, since, until)
+                fetch_contributions(missing_repos[0], token, since, until, page_size)
             ]
         else:
             fetched_contributions = fetch_multiple_contributions(
@@ -134,6 +185,7 @@ def _load_or_fetch_contributions(
                 token,
                 since,
                 until,
+                page_size,
             )
 
         for index, repo, contributions in zip(
@@ -154,10 +206,12 @@ def _load_or_fetch_contributions(
                             "repository": repo,
                             "owner": owner,
                             "name": repo_name,
-                            "schemaVersion": 1,
+                            "schemaVersion": CACHE_SCHEMA_VERSION,
                             "generatedAt": datetime.now(timezone.utc)
                             .isoformat(timespec="seconds")
                             .replace("+00:00", "Z"),
+                            "since": _format_cache_date(since),
+                            "until": _format_cache_date(until),
                         },
                         "contributions": _dump_contributions(contributions),
                     },
@@ -188,20 +242,20 @@ def main(
     format: Annotated[
         OutputFormatOption,
         typer.Option(
-            "--format", "-f", help="출력 파일 형식을 지정합니다. (csv | txt | html)"
+            "--format",
+            "-f",
+            help="출력 파일 형식을 지정합니다. (csv | txt | html)",
+            case_sensitive=False,
         ),
     ] = OutputFormatOption.txt,
     output: Annotated[
-        str | None,
+        str,
         typer.Option(
             "--output",
             "-o",
-            help=(
-                "결과를 저장할 출력 디렉터리 경로입니다. "
-                "생략하면 파일로 저장하지 않고 stdout에 출력합니다. 예: ./result"
-            ),
+            help="결과를 저장할 출력 디렉터리 경로입니다.",
         ),
-    ] = None,
+    ] = "./result",
     token: Annotated[
         str | None,
         typer.Option(
@@ -212,7 +266,7 @@ def main(
                 "미제공 시 GITHUB_TOKEN 환경 변수를 사용합니다."
             ),
         ),
-    ] = None,
+    ],
     # 요구사항에 명시된 다중 저장소 집계 여부 선택을 위한 플래그 추가
     aggregate: Annotated[
         bool,
@@ -264,6 +318,16 @@ def main(
             help="이슈 선점 키워드 목록입니다. 쉼표로 구분합니다.",
         ),
     ] = None,
+    page_size: Annotated[
+        int,
+        typer.Option(
+            "--page-size",
+            help="GraphQL 페이지네이션의 페이지 크기입니다. (1~100)",
+            envvar="REPOSCORE_PAGE_SIZE",
+            min=1,
+            max=100,
+        ),
+    ] = DEFAULT_PAGE_SIZE,
 ) -> None:
     """Fetch basic repository counts from GitHub GraphQL API."""
 
@@ -391,6 +455,7 @@ def main(
             no_cache,
             parsed_since,
             parsed_until,
+            page_size,
         )
 
     except ValueError as error:
@@ -449,8 +514,13 @@ def main(
             ]
 
         results = [_score_to_result(score) for score in scores]
+
+        # 사용자가 선택한 형식만 파일로 저장
         content = build_output(results, format_value)
-        write_output(content, output, format_value)
+        saved_path = write_output(content, output, format_value)
+
+        print("결과가 다음 경로에 저장되었습니다:")
+        print(f"  - {saved_path.absolute()}")
     except Exception as error:
         print(f"출력 오류: {error}", file=sys.stderr)
         raise typer.Exit(1) from error
